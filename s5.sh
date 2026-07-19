@@ -1,25 +1,26 @@
 #!/bin/bash
 
 echo "======================================================"
-echo "🚀 开始一键部署 原生 Python SOCKS5 代理服务端..."
+echo "🚀 开始一键部署 原生 Python SOCKS5 (终极兼容老版本)"
 echo "======================================================"
 
-# 1. 检查并安装 Python3 环境
+# 1. 强制清理旧文件，防止缓存覆盖失败
+rm -f main.py
+
+# 2. 检查环境
 if ! command -v python3 &> /dev/null; then
     echo "未检测到 Python3，正在尝试自动安装..."
     if command -v apt-get &> /dev/null; then
         apt-get update && apt-get install -y python3
     elif command -v yum &> /dev/null; then
         yum install -y python3
-    elif command -v apk &> /dev/null; then
-        apk add python3
     else
         echo "❌ 无法自动安装 Python3，请手动安装后重试。"
         exit 1
     fi
 fi
 
-# 2. 动态生成纯 Python SOCKS5 服务端代码
+# 3. 动态生成纯 Python SOCKS5 服务端代码 (彻底移除所有 3.7+ 语法)
 echo "📝 正在生成主程序文件 main.py..."
 cat << 'EOF' > main.py
 import asyncio
@@ -49,7 +50,8 @@ async def pipe(reader, writer):
 
 async def handle_client(reader, writer):
     try:
-        version, nmethods = struct.unpack("!BB", await reader.readexactly(2))
+        version_nmethods = await reader.readexactly(2)
+        version, nmethods = struct.unpack("!BB", version_nmethods)
         methods = await reader.readexactly(nmethods)
         
         if version != 5 or 2 not in methods:
@@ -78,7 +80,7 @@ async def handle_client(reader, writer):
         req_header = await reader.readexactly(4)
         ver, cmd, rsv, atyp = req_header
 
-        # 拒绝 UDP (0x03)，逼迫客户端走 TCP 链式代理
+        # 拒绝 UDP，强制 TCP 链式代理
         if cmd == 3:
             writer.write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             await writer.drain()
@@ -107,8 +109,9 @@ async def handle_client(reader, writer):
             await writer.drain()
             return
 
-        task_c2r = asyncio.create_task(pipe(reader, remote_writer))
-        task_r2c = asyncio.create_task(pipe(remote_reader, writer))
+        # 彻底移除 create_task，改用兼容所有老版本的 ensure_future
+        task_c2r = asyncio.ensure_future(pipe(reader, remote_writer))
+        task_r2c = asyncio.ensure_future(pipe(remote_reader, writer))
         await asyncio.gather(task_c2r, task_r2c)
 
     except Exception:
@@ -117,52 +120,43 @@ async def handle_client(reader, writer):
         writer.close()
 
 async def main():
-    # 兼容老版本 Python，不使用 start_server 的 context manager
     server = await asyncio.start_server(handle_client, '0.0.0.0', PORT)
     
-    auth_str = f"{USER}:{PASS}"
+    auth_str = "{}:{}".format(USER, PASS)
     auth_b64 = base64.b64encode(auth_str.encode()).decode().rstrip('=')
-    share_link = f"socks://{auth_b64}@{DOMAIN}:{PORT}"
+    share_link = "socks://{}@{}:{}".format(auth_b64, DOMAIN, PORT)
 
-    print(f"\n======================================================")
-    print(f"✅ 纯 Python 原生 SOCKS5 服务端已启动")
-    print(f"======================================================")
-    print(f"🌐 节点地址: {DOMAIN}")
-    print(f"🔌 监听端口: {PORT}")
-    print(f"👤 固定用户名: {USER}")
-    print(f"🔑 固定密码: {PASS}")
-    print(f"------------------------------------------------------")
-    print(f"📌 客户端订阅/导入链接:")
+    print("\n======================================================")
+    print("✅ 纯 Python 原生 SOCKS5 已启动 (终极老系统兼容版)")
+    print("======================================================")
+    print("🌐 节点地址: {}".format(DOMAIN))
+    print("🔌 监听端口: {}".format(PORT))
+    print("👤 固定用户名: {}".format(USER))
+    print("🔑 固定密码: {}".format(PASS))
+    print("------------------------------------------------------")
+    print("📌 客户端订阅/导入链接:")
     print(share_link)
-    print(f"======================================================\n")
+    print("======================================================\n")
 
-    # 兼容老版本 asyncio 的持续运行方式
     if hasattr(server, 'serve_forever'):
         await server.serve_forever()
     else:
-        # Python 3.6 等极老版本的保活写法
         while True:
             await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     try:
-        # 兼容性处理：如果存在 asyncio.run (Python 3.7+) 则直接用
-        # 否则回退到老版本的事件循环写法 (Python 3.5, 3.6)
-        if hasattr(asyncio, "run"):
-            asyncio.run(main())
-        else:
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(main())
-            loop.run_forever()
+        # 彻底移除 asyncio.run，全版本兼容启动方式
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         pass
 EOF
 echo "✅ main.py 创建成功！"
 
-# 3. 智能运行逻辑
+# 4. 运行服务
 if [ "$(id -u)" -eq 0 ] && command -v systemctl &> /dev/null; then
-    echo "🔧 检测到 Root 权限，正在注册为 Systemd 后台守护进程..."
-    
+    echo "🔧 正在注册为 Systemd 后台守护进程..."
     cat << EOF > /etc/systemd/system/pysocks5.service
 [Unit]
 Description=Lightweight Python SOCKS5 Proxy
@@ -180,16 +174,12 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
-
     systemctl daemon-reload
     systemctl enable pysocks5
     systemctl restart pysocks5
-    echo "✅ 服务已在后台永久运行！"
-    echo "👉 使用命令 'systemctl status pysocks5' 查看运行状态和连接链接。"
-    
+    echo "✅ 服务已在后台永久运行！命令: systemctl status pysocks5"
     sleep 1
     systemctl status pysocks5 --no-pager | grep "socks://"
-
 else
     echo "▶️ 普通权限环境，正在前台启动服务..."
     python3 main.py
