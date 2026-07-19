@@ -117,6 +117,7 @@ async def handle_client(reader, writer):
         writer.close()
 
 async def main():
+    # 兼容老版本 Python，不使用 start_server 的 context manager
     server = await asyncio.start_server(handle_client, '0.0.0.0', PORT)
     
     auth_str = f"{USER}:{PASS}"
@@ -135,19 +136,30 @@ async def main():
     print(share_link)
     print(f"======================================================\n")
 
-    async with server:
+    # 兼容老版本 asyncio 的持续运行方式
+    if hasattr(server, 'serve_forever'):
         await server.serve_forever()
+    else:
+        # Python 3.6 等极老版本的保活写法
+        while True:
+            await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        # 兼容性处理：如果存在 asyncio.run (Python 3.7+) 则直接用
+        # 否则回退到老版本的事件循环写法 (Python 3.5, 3.6)
+        if hasattr(asyncio, "run"):
+            asyncio.run(main())
+        else:
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(main())
+            loop.run_forever()
     except KeyboardInterrupt:
         pass
 EOF
 echo "✅ main.py 创建成功！"
 
 # 3. 智能运行逻辑
-# 检查是否为 Root (UID=0) 且支持 systemd。如果是，部署为后台守护进程 (适用于独立 VPS)
 if [ "$(id -u)" -eq 0 ] && command -v systemctl &> /dev/null; then
     echo "🔧 检测到 Root 权限，正在注册为 Systemd 后台守护进程..."
     
@@ -175,12 +187,10 @@ EOF
     echo "✅ 服务已在后台永久运行！"
     echo "👉 使用命令 'systemctl status pysocks5' 查看运行状态和连接链接。"
     
-    # 稍微等一秒打印链接
     sleep 1
     systemctl status pysocks5 --no-pager | grep "socks://"
 
 else
-    # 如果不是 Root 环境 (比如在 Pelican 容器中)，则直接在前台启动运行
     echo "▶️ 普通权限环境，正在前台启动服务..."
     python3 main.py
 fi
